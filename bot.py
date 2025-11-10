@@ -1,112 +1,92 @@
 import os
 import json
 import sqlite3
+import openai
 from dotenv import load_dotenv
-from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
+from telegram import Update
 from telegram.ext import (
-    ApplicationBuilder, CommandHandler, MessageHandler,
-    CallbackQueryHandler, ContextTypes, filters
+    ApplicationBuilder, CommandHandler, MessageHandler, ContextTypes, filters
 )
 
-# ------------------ بارگذاری تنظیمات ------------------
+# بارگذاری متغیرها از Environment یا فایل .env
 load_dotenv()
 TELEGRAM_TOKEN = os.getenv("TELEGRAM_TOKEN")
+OPENAI_API_KEY = os.getenv("OPENAI_API_KEY")
+openai.api_key = OPENAI_API_KEY
 
-# ------------------ دیتابیس لیدها ------------------
-conn = sqlite3.connect("leads.db", check_same_thread=False)
+# اتصال به دیتابیس برای ذخیره لیدها
+conn = sqlite3.connect('leads.db', check_same_thread=False)
 cursor = conn.cursor()
-cursor.execute('''CREATE TABLE IF NOT EXISTS leads
-                  (id INTEGER PRIMARY KEY AUTOINCREMENT,
-                   username TEXT,
-                   message TEXT)''')
+cursor.execute('''CREATE TABLE IF NOT EXISTS leads (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    username TEXT,
+    message TEXT
+)''')
 conn.commit()
 
-# ------------------ بارگذاری داده تورها ------------------
-with open("tours.json", "r", encoding="utf-8") as f:
-    tours = json.load(f)
+# بارگذاری داده‌ی تورها از فایل JSON
+try:
+    with open("tours.json", "r", encoding="utf-8") as f:
+        tours = json.load(f)
+except Exception:
+    tours = []
 
-# ------------------ توابع کمکی ------------------
-def search_tours(keyword):
-    results = []
-    keyword = keyword.lower()
-    for tour in tours:
-        if keyword in tour["destination"].lower() or keyword in tour["category"].lower():
-            results.append(tour)
-    return results
+# ----------------- دستورات ربات -----------------
 
-def format_tour(tour):
-    return (f"🏖 مقصد: {tour['destination']}\n"
-            f"💰 قیمت: {tour['price']:,} تومان\n"
-            f"🕓 مدت: {tour['duration']}\n"
-            f"⭐ رضایت: {tour['satisfaction']}/5\n"
-            f"📋 جزئیات: {tour['details']}")
-
-# ------------------ دستورات و پیام‌ها ------------------
-
+# شروع ربات
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    text = (
-        "👋 سلام! خوش اومدی به ربات رسمی **برترگشت** ✈️\n"
-        "من می‌تونم کمکت کنم تا بهترین تورها رو بر اساس قیمت، مقصد یا محبوبیت پیدا کنی 🌍\n\n"
-        "از گزینه‌های زیر انتخاب کن 👇"
+    user = update.message.from_user
+    await update.message.reply_text(
+        f"سلام {user.first_name} 👋\nبه ربات تورهای گردشگری برترگشت خوش اومدی!\n\n"
+        "کافیه نام مقصدت رو بفرستی تا ارزان‌ترین تورها رو پیشنهاد بدم 🌍"
     )
-    keyboard = [
-        [InlineKeyboardButton("💸 ارزون‌ترین تورها", callback_data="cheap")],
-        [InlineKeyboardButton("⭐ تورهای محبوب", callback_data="top")],
-        [InlineKeyboardButton("🔍 جستجوی مقصد خاص", callback_data="search")]
-    ]
-    await update.message.reply_text(text, reply_markup=InlineKeyboardMarkup(keyboard))
 
-async def button_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    query = update.callback_query
-    await query.answer()
+# پاسخ به پیام‌ها (تور یا سوال)
+async def handle_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
+    text = update.message.text.strip().lower()
+    user = update.message.from_user.username or update.message.from_user.first_name
 
-    if query.data == "cheap":
-        sorted_tours = sorted(tours, key=lambda x: x["price"])
-        reply = "\n\n".join([format_tour(t) for t in sorted_tours[:3]])
-        await query.message.reply_text(f"💰 ارزون‌ترین تورها:\n\n{reply}")
-
-    elif query.data == "top":
-        sorted_tours = sorted(tours, key=lambda x: x["satisfaction"], reverse=True)
-        reply = "\n\n".join([format_tour(t) for t in sorted_tours[:3]])
-        await query.message.reply_text(f"🌟 تورهای پررضایت:\n\n{reply}")
-
-    elif query.data == "search":
-        await query.message.reply_text("📍 لطفاً مقصد یا کشور مورد نظرت رو بنویس:")
-
-async def message_handler(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    user_text = update.message.text
-    username = update.message.from_user.username
-
-    # ذخیره لید
-    cursor.execute("INSERT INTO leads (username, message) VALUES (?, ?)", (username, user_text))
+    # ذخیره لید در دیتابیس
+    cursor.execute("INSERT INTO leads (username, message) VALUES (?, ?)", (user, text))
     conn.commit()
 
-    results = search_tours(user_text)
+    # بررسی تور در فایل JSON
+    results = [t for t in tours if text in t["destination"].lower()]
 
     if results:
-        reply = "\n\n".join([format_tour(t) for t in results])
-        await update.message.reply_text(f"🧭 نتایج برای '{user_text}':\n\n{reply}")
-    else:
-        await update.message.reply_text("🤖 فعلاً بخش هوش مصنوعی غیرفعاله. فقط می‌تونم تورها رو جستجو کنم ✈️")
-
-async def help_command(update: Update, context: ContextTypes.DEFAULT_TYPE):
-    await update.message.reply_text("می‌تونی بنویسی مثل: «تور ارزان استانبول» یا «تور لوکس دبی»")
-
-# ------------------ اجرای ربات ------------------
-
-def main():
-    if not TELEGRAM_TOKEN:
-        print("❌ خطا: توکن تلگرام در فایل .env پیدا نشد!")
+        response = "✅ تورهای پیشنهادی:\n\n"
+        for t in results:
+            response += f"🏖 {t['destination']}\n💰 قیمت: {t['price']}\n⭐ رضایت: {t['rating']}\n📅 تاریخ: {t['date']}\n\n"
+        await update.message.reply_text(response)
         return
 
-    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
-    app.add_handler(CommandHandler("start", start))
-    app.add_handler(CommandHandler("help", help_command))
-    app.add_handler(CallbackQueryHandler(button_handler))
-    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, message_handler))
+    # اگر تور پیدا نشد، از هوش مصنوعی بپرس
+    await update.message.reply_text("🔍 در حال جستجوی اطلاعات...")
+    ai_response = ask_openai(text)
+    await update.message.reply_text(ai_response)
 
-    print("✅ ربات @bartargashtbot در حال اجراست...")
-    app.run_polling()
+# پاسخ با OpenAI
+def ask_openai(prompt):
+    try:
+        response = openai.ChatCompletion.create(
+            model="gpt-3.5-turbo",
+            messages=[
+                {"role": "system", "content": "تو دستیار سفر هستی. کاربر درباره تورها، مقصدها یا سفر سوال می‌پرسه."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=250,
+            temperature=0.7
+        )
+        return response.choices[0].message["content"].strip()
+    except Exception as e:
+        return f"⚠️ خطا در ارتباط با هوش مصنوعی: {str(e)}"
 
+# ----------------- اجرای ربات -----------------
 if __name__ == "__main__":
-    main()
+    app = ApplicationBuilder().token(TELEGRAM_TOKEN).build()
+
+    app.add_handler(CommandHandler("start", start))
+    app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, handle_message))
+
+    print("✅ ربات برترگشت فعال شد...")
+    app.run_polling()
