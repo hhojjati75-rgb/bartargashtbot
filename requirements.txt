@@ -1,4 +1,4 @@
 python-telegram-bot==20.7
-openai
-python-dotenv
-sqlite3
+openai==0.28.0
+python-dotenv==1.0.1
+sqlite3-binary
